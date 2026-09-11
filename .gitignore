@@ -1,0 +1,27 @@
+# 环境变量和密钥
+.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 会话数据（可选：如果不想上传历史会话，取消下一行注释）
+# sessions_store.json
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db

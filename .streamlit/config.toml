@@ -1,0 +1,14 @@
+[theme]
+base = "light"
+# 学术靛蓝主色：用于主按钮、滑杆、链接、聊天发送键，替代 Streamlit 默认红色
+primaryColor = "#4F46E5"
+# 应用底色：极浅冷灰，衬托白色卡片
+backgroundColor = "#F5F6FA"
+# 次级面：侧边栏/输入框等容器底色
+secondaryBackgroundColor = "#ECEEF5"
+# 正文墨色
+textColor = "#1E2433"
+font = "sans serif"
+
+[server]
+headless = true
