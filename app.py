@@ -33,6 +33,7 @@ from llm_client import (
     DeepSeekConfigError,
     DeepSeekNetworkError,
 )
+import course_catalog as catalog
 
 # --------------------------------------------------------------------------- #
 # 页面基础配置
@@ -46,20 +47,78 @@ st.set_page_config(
 
 # 课程助教的系统提示词：限定助手的身份、边界与答疑风格
 SYSTEM_PROMPT = (
-    "你是一名在线课程的智能答疑助教，服务对象为正在学习编程与计算机相关课程的学生。"
-    "请遵循以下原则回答问题：\n"
-    "1. 先给出直接、准确的结论，再分步骤讲解原理，必要时配合可运行的代码示例；\n"
-    "2. 善用类比、图示（Markdown 表格/列表）帮助理解，语言亲切、鼓励学生思考；\n"
-    "3. 学生概念混淆时，主动指出易错点并给出辨析；答完后可提出 1 个延伸思考题；\n"
-    "4. 只回答与课程学习相关的问题，对无关或无法确定的内容如实说明，不要编造事实；\n"
-    "5. 全部使用简体中文回答，代码注释清晰，Markdown 排版整洁。"
+    "你是一名专业的在线课程的智能答疑助教，服务对象为正在大连交通大学学习大学专业课程的学生。"
+    "请你遵循以下原则回答问题：\n"
+    "1. 先给出直接、准确的结论,如果学生需要详细解释,再分步骤讲解原理,必要时可配合简单示例；\n"
+    "2. 善用类比、图示(Markdown 表格/列表)帮助理解,语言亲切、鼓励学生思考；\n"
+    "3. 学生概念混淆时,主动指出易错点并给出辨析;如果学生需要,可在答完后提出 1 个延伸思考题；\n"
+    "4. 只回答与课程学习相关的问题,对无关或无法确定的内容请如实说明,不要编造事实；\n"
+    "5. 使用简体中文回答,回复Markdown排版整洁,引用专业文献时请注明出处。"
 )
 
+# --------------------------------------------------------------------------- #
+# 回答偏好预设：把技术参数（temperature / max_tokens）转换为用户友好的选项，
+# 选择结果即时映射回 API 参数，并以系统指令约束模型的表达风格与篇幅。
+# --------------------------------------------------------------------------- #
+REPLY_STYLES: Dict[str, dict] = {
+    # 名称: 采样温度 / 一句话说明（界面读数）/ 注入系统提示词的风格指令
+    "轻快": {
+        "temp": 0.9,
+        "desc": "轻松明快、亲切有活力",
+        "instruction": "请用轻松明快、亲切活泼的语气回答,节奏轻快,可适度使用口语化表达与少量 emoji。",
+    },
+    "幽默": {
+        "temp": 1.1,
+        "desc": "风趣生动、善用比喻",
+        "instruction": "请在保证知识准确的前提下用风趣幽默的方式讲解,善用生活化比喻和俏皮话,让内容更有记忆点,但不要喧宾夺主。",
+    },
+    "严谨": {
+        "temp": 0.3,
+        "desc": "精确克制、逻辑严密",
+        "instruction": "请用严谨精确的学术化表达回答,注重概念边界、定义准确性与逻辑严密性,少用口语和修辞,结论必须有依据。",
+    },
+    "专业": {
+        "temp": 0.5,
+        "desc": "规范专业、详略得当",
+        "instruction": "请保持专业规范、客观均衡的讲解风格,术语使用准确,深度与可读性兼顾,这是默认风格。",
+    },
+    "简洁": {
+        "temp": 0.4,
+        "desc": "直击要点、拒绝冗余",
+        "instruction": "请极度精简地回答,先给结论,再用最少的要点说明,不做多余展开和寒暄,能用一句话说清就不用两句。",
+    },
+}
+STYLE_ORDER = ["轻快", "幽默", "严谨", "专业", "简洁"]
+
+REPLY_LENGTHS: Dict[str, dict] = {
+    "简短": {
+        "tokens": 512,
+        "desc": "约 150 字内，只讲核心结论",
+        "instruction": "篇幅要求：回答控制在 150 字以内，只保留核心结论与最关键的要点，省略示例与延展。",
+    },
+    "中等": {
+        "tokens": 1024,
+        "desc": "约 300 字，结论加简要说明",
+        "instruction": "篇幅要求：回答控制在 300 字左右，给出结论与简要原理，必要时配一个短小的示例。",
+    },
+    "详细": {
+        "tokens": 2048,
+        "desc": "完整讲解，含步骤与示例",
+        "instruction": "篇幅要求：回答可以充分展开，包含结论、分步骤原理、代码或示例，以及易错点提示。",
+    },
+    "超长": {
+        "tokens": 4096,
+        "desc": "深度剖析，体系化展开",
+        "instruction": "篇幅要求：进行体系化的深度讲解，全面覆盖背景、原理、步骤、多个示例、对比辨析与练习建议，篇幅不限。",
+    },
+}
+LENGTH_ORDER = ["简短", "中等", "详细", "超长"]
+
 SUGGESTED_QUESTIONS = [
-    "什么是 Python 中的装饰器？请举个例子",
-    "用生活中的例子解释一下什么是递归",
-    "帮我梳理面向对象的三大特性",
-    "出一道关于类继承的练习题并给出解析",
+    "帮我讲讲高等数学的相关内容",
+    "我的课程忘选/漏选了,该怎么办",
+    "我告诉你课程名称,帮我出几道专业练习题呗",
+    "热烈庆祝我校建校70周年!"
 ]
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +220,82 @@ st.markdown(
         /* 侧边栏会话条目按钮紧凑化 */
         [data-testid="stSidebar"] [data-testid="stExpander"] .stButton button {
             padding: 6px 10px !important; font-size: .85rem !important; min-height: 0;
+        }
+
+        /* ===================== 回答偏好：分段选择器 ===================== */
+        /* 侧边栏内没有 st.radio，role=radiogroup 仅属于这两个分段控件，
+           因此用 stSidebar + role 稳定锚点收窄作用域（该版本无 stSegmentedControl testid） */
+        [data-testid="stSidebar"] [role="radiogroup"] {
+            gap: 4px; flex-wrap: wrap; padding: 4px;
+            background: #F1F3F9 !important; border: 1px solid var(--line);
+            border-radius: 12px; width: 100%;
+        }
+        [data-testid="stSidebar"] [role="radio"] {
+            flex: 1 1 auto; min-width: 40px; margin: 0 !important;
+            padding: 5px 6px !important;
+            border-radius: 9px !important; border: none !important;
+            transition: background-color .25s ease, color .25s ease,
+                        box-shadow .25s ease, transform .15s ease;
+        }
+        [data-testid="stSidebar"] [role="radio"] p {
+            font-size: .8rem !important; font-weight: 600; margin: 0;
+            transition: color .25s ease;
+        }
+        [data-testid="stSidebar"] [role="radio"]:hover {
+            background: rgba(79, 70, 229, .10) !important;
+        }
+        [data-testid="stSidebar"] [role="radio"]:active {
+            transform: scale(.96);
+        }
+        /* 选中态：品牌靛蓝填充 + 轻投影，明确指示当前选择 */
+        [data-testid="stSidebar"] [role="radio"][aria-checked="true"] {
+            background: var(--brand-500) !important;
+            box-shadow: 0 3px 10px rgba(79, 70, 229, .38);
+        }
+        [data-testid="stSidebar"] [role="radio"][aria-checked="true"]:hover {
+            background: var(--brand-500) !important;
+        }
+        [data-testid="stSidebar"] [role="radio"][aria-checked="true"] p {
+            color: #fff !important; font-weight: 800 !important;
+        }
+        /* 偏好读数卡片：切换选项时整块淡入上移，仪表条宽度平滑过渡 */
+        .pref-readout {
+            display: flex; gap: 10px; align-items: flex-start;
+            margin: 4px 0 12px; padding: 10px 12px;
+            border: 1px solid var(--line); border-radius: 12px;
+            background: #FAFBFE;
+        }
+        .pref-dot {
+            width: 8px; height: 8px; border-radius: 50%; flex: none;
+            margin-top: 5px; background: #22C55E;
+            animation: pref-dot-pulse 2s ease-in-out infinite;
+        }
+        .pref-body { flex: 1; min-width: 0; }
+        .pref-line { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+        .pref-line b { font-size: .84rem; color: var(--ink-900); font-weight: 800; }
+        .pref-desc { font-size: .72rem; color: var(--ink-400); line-height: 1.5; }
+        .pref-meter {
+            height: 5px; border-radius: 99px; background: #E7E9F2;
+            margin: 7px 0 5px; overflow: hidden;
+        }
+        .pref-meter i {
+            display: block; height: 100%; border-radius: 99px;
+            background: linear-gradient(90deg, var(--brand-500), #818CF8);
+            transition: width .55s cubic-bezier(.22, .8, .36, 1);
+        }
+        @keyframes pref-flash-in {
+            from { opacity: 0; transform: translateY(5px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        /* 类名随所选选项序号变化，切换时动画自动重启 */
+        [class*="pref-flash-"] { animation: pref-flash-in .38s cubic-bezier(.22, .8, .36, 1) both; }
+        @keyframes pref-dot-pulse {
+            0%, 100% { box-shadow: 0 0 0 3px rgba(34, 197, 94, .16); }
+            50%      { box-shadow: 0 0 0 6px rgba(34, 197, 94, .04); }
+        }
+        @media (max-width: 640px) {
+            [data-testid="stSidebar"] [role="radio"] { min-width: 40px; }
+            [data-testid="stSidebar"] [role="radio"] p { font-size: .76rem !important; }
         }
 
         /* ===================== 按钮体系 ===================== */
@@ -430,6 +565,221 @@ st.markdown(
                 animation: none !important; transition: none !important;
             }
         }
+
+        /* ===================== 课程体系模块 ===================== */
+        /* 专业卡片区 */
+        .major-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 14px; margin: 4px 0 20px;
+        }
+        .major-card {
+            position: relative; border: 1px solid var(--line); border-radius: 18px;
+            padding: 18px 20px; background: var(--surface);
+            box-shadow: var(--shadow-sm); overflow: hidden;
+            transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
+        }
+        .major-card.active {
+            border-color: var(--brand-500);
+            box-shadow: 0 10px 26px rgba(79,70,229,.18);
+            background: linear-gradient(160deg, #FFFFFF 0%, var(--brand-50) 130%);
+        }
+        .major-card.active::before {
+            content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+            background: linear-gradient(180deg, var(--brand-500), #818CF8);
+        }
+        .major-card .mc-icon { font-size: 1.7rem; line-height: 1; }
+        .major-card .mc-name { font-size: 1.06rem; font-weight: 800; color: var(--ink-900); margin: 8px 0 2px; }
+        .major-card .mc-en { font-size: .72rem; color: var(--ink-400); letter-spacing: .04em; text-transform: uppercase; }
+        .major-card .mc-tag { font-size: .8rem; color: var(--ink-600); line-height: 1.6; margin-top: 8px; }
+        .major-card .mc-badge {
+            display: inline-block; margin-top: 10px; font-size: .7rem; font-weight: 700;
+            color: var(--brand-700); background: var(--brand-50);
+            border: 1px solid #C7D2FE; border-radius: 999px; padding: 2px 10px;
+        }
+        .major-card.locked { opacity: .68; background: #FAFBFE; }
+        .major-card.locked .mc-badge { color: var(--ink-400); background: #F1F3F9; border-color: var(--line); }
+
+        /* 类别分段导航 pill */
+        .cat-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 16px; }
+        .cat-pill {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: .84rem; font-weight: 600; border-radius: 999px;
+            padding: 6px 14px; border: 1px solid var(--line); background: var(--surface);
+            color: var(--ink-600); cursor: pointer; user-select: none;
+            transition: all .18s ease;
+        }
+        .cat-pill:hover { transform: translateY(-1px); }
+        .cat-pill .cnt {
+            font-size: .7rem; font-weight: 700; border-radius: 999px;
+            padding: 0 7px; line-height: 17px; background: #EEF1F8; color: var(--ink-400);
+        }
+
+        /* 课程列表卡片 */
+        .course-card {
+            border: 1px solid var(--line); border-left-width: 4px;
+            border-radius: 14px; background: var(--surface);
+            padding: 13px 15px; margin-bottom: 10px;
+            box-shadow: var(--shadow-sm); cursor: pointer;
+            transition: transform .18s ease, box-shadow .18s ease;
+            animation: qa-fade-up .3s cubic-bezier(.22,.8,.36,1) both;
+        }
+        .course-card:hover { transform: translateX(3px); box-shadow: var(--shadow-md); }
+        .course-card.active { box-shadow: 0 8px 22px rgba(79,70,229,.16); }
+        .course-card .cc-top { display: flex; align-items: center; gap: 8px; }
+        .course-card .cc-name { font-size: .97rem; font-weight: 700; color: var(--ink-900); }
+        .course-card .cc-nature {
+            font-size: .66rem; font-weight: 700; border-radius: 6px; padding: 1px 7px;
+            margin-left: auto; white-space: nowrap;
+        }
+        .nature-required { background: #FEE2E2; color: #B91C1C; }
+        .nature-elective { background: #DBEAFE; color: #1D4ED8; }
+        .course-card .cc-meta {
+            display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 7px;
+            font-size: .76rem; color: var(--ink-400);
+        }
+        .course-card .cc-meta b { color: var(--ink-600); font-weight: 600; }
+
+        /* 课程列表：整卡即按钮（st-key-coursecard_ 前缀由 widget key 自动生成） */
+        [class*="st-key-coursecard_"] { margin-bottom: 2px; }
+        [class*="st-key-coursecard_"] > button {
+            text-align: left !important; justify-content: flex-start !important;
+            align-items: flex-start !important; min-height: 0 !important;
+            padding: 10px 14px !important; border-left-width: 4px !important;
+            animation: qa-fade-up .3s cubic-bezier(.22,.8,.36,1) both;
+        }
+        [class*="st-key-coursecard_"] > button p {
+            white-space: pre-line !important; text-align: left;
+            font-size: .75rem !important; font-weight: 500;
+            color: var(--ink-400) !important; line-height: 1.55; margin: 0;
+        }
+        [class*="st-key-coursecard_"] > button p::first-line {
+            font-size: .95rem !important; font-weight: 800 !important;
+            color: var(--ink-900) !important; letter-spacing: -0.005em;
+        }
+        [class*="st-key-coursecard_"] > button[kind="primary"] p,
+        [class*="st-key-coursecard_"] > button[kind="primary"] p::first-line {
+            color: #fff !important;
+        }
+        [class*="st-key-coursecard_"] > button[kind="primary"] p { opacity: .85; }
+        [class*="st-key-coursecard_"] > button[kind="primary"] { border-left-color: #fff !important; }
+
+        /* 类别筛选按钮的圆角化与高度收敛 */
+        [class*="st-key-catpill_"] > button {
+            padding: 6px 8px !important; font-size: .82rem !important; min-height: 0;
+        }
+
+        /* 课程列表面板内的分类小标题（固定高度滚动容器中保持视觉分组） */
+        .course-group-label {
+            display: flex; align-items: center; gap: 8px;
+            font-size: .74rem; font-weight: 800; letter-spacing: .04em;
+            color: var(--ink-400); margin: 10px 2px 6px;
+        }
+        .course-group-label::after {
+            content: ""; flex: 1; height: 1px; background: var(--line);
+        }
+        .course-group-label:first-child { margin-top: 2px; }
+        .course-search-hint {
+            font-size: .76rem; color: var(--ink-400); margin: 0 0 8px;
+        }
+
+        /* 课程详情 */
+        .detail-head {
+            border: 1px solid var(--line); border-radius: 18px;
+            background: var(--surface); padding: 20px 22px;
+            box-shadow: var(--shadow-sm); margin-bottom: 14px;
+            animation: qa-fade-up .34s cubic-bezier(.22,.8,.36,1) both;
+        }
+        .detail-cat {
+            display: inline-flex; align-items: center; gap: 6px;
+            font-size: .74rem; font-weight: 700; border-radius: 999px;
+            padding: 3px 12px; margin-bottom: 10px;
+        }
+        .detail-head h2 { margin: 0; font-size: 1.5rem; font-weight: 800; color: var(--ink-900); }
+        .detail-head .dh-en { font-size: .82rem; color: var(--ink-400); margin-top: 3px; letter-spacing: .02em; }
+        .detail-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .detail-badge {
+            display: inline-flex; flex-direction: column; gap: 2px;
+            min-width: 78px; border: 1px solid var(--line); border-radius: 12px;
+            padding: 8px 12px; background: #FAFBFE;
+        }
+        .detail-badge .db-k { font-size: .66rem; color: var(--ink-400); font-weight: 600; }
+        .detail-badge .db-v { font-size: .88rem; color: var(--ink-900); font-weight: 700; }
+        .detail-section {
+            border: 1px solid var(--line); border-radius: 16px; background: var(--surface);
+            padding: 16px 20px; margin-bottom: 12px; box-shadow: var(--shadow-sm);
+            animation: qa-fade-up .34s cubic-bezier(.22,.8,.36,1) both;
+        }
+        .detail-section h4 {
+            margin: 0 0 10px; font-size: .95rem; font-weight: 800;
+            color: var(--brand-700); display: flex; align-items: center; gap: 7px;
+        }
+        .detail-section p { margin: 0; color: var(--ink-600); font-size: .9rem; line-height: 1.8; }
+        .tag-cloud { display: flex; flex-wrap: wrap; gap: 7px; }
+        .tag-chip {
+            font-size: .78rem; border-radius: 999px; padding: 3px 12px;
+            background: var(--brand-50); color: var(--brand-700);
+            border: 1px solid #DDE1FB;
+        }
+        .prereq-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+        .prereq-node {
+            font-size: .8rem; font-weight: 600; border-radius: 9px;
+            padding: 4px 12px; background: #F1F5F9; color: var(--ink-600);
+            border: 1px solid var(--line);
+        }
+        .prereq-arrow { color: var(--ink-400); font-size: .8rem; }
+        .prereq-self {
+            font-size: .8rem; font-weight: 700; border-radius: 9px;
+            padding: 4px 12px; background: var(--brand-500); color: #fff;
+        }
+        .detail-empty {
+            border: 1.5px dashed #C9CEDF; border-radius: 18px; background: rgba(255,255,255,.6);
+            padding: 52px 24px; text-align: center; color: var(--ink-400);
+        }
+        .detail-empty .de-icon { font-size: 2.6rem; }
+        .detail-empty p { margin: 10px 0 0; font-size: .92rem; line-height: 1.7; }
+        .ai-advice-box {
+            border: 1px solid #C7D2FE; border-radius: 16px;
+            background: linear-gradient(165deg, #FFFFFF 0%, var(--brand-50) 150%);
+            padding: 18px 22px; box-shadow: var(--shadow-sm);
+        }
+        .ai-advice-box h3 { margin: 0 0 6px; font-size: 1.02rem; color: var(--brand-700); font-weight: 800; }
+        .ai-advice-box h3 + div > div h4, .ai-advice-box h4 { font-size: .92rem; }
+
+        /* 右侧详情面板：与左侧课程列表面板同规格（边框 + 600px 固定高 + 内部滚动） */
+        [data-testid="stVerticalBlockBorderWrapper"]:has(> .st-key-course_detail_panel) { padding: 0; }
+        /* 左栏面板上方有搜索框，右栏没有：flex 底对齐使两个等高面板上下沿精确对齐；
+           窄屏上下堆叠时列高随内容收缩，auto 外边距不产生空白 */
+        [data-testid="stColumn"] > [data-testid="stVerticalBlock"] > div:has(.st-key-course_detail_panel) {
+            margin-top: auto;
+        }
+        .st-key-course_detail_panel { padding: 20px 22px 24px; }
+        /* 面板内头部扁平化为“面板标题区”，避免边框卡片嵌套 */
+        .st-key-course_detail_panel .detail-head {
+            border: none !important; border-radius: 0; box-shadow: none;
+            background: transparent; padding: 0 0 14px; margin: 0 0 14px;
+            border-bottom: 1px solid var(--line);
+        }
+        /* 信息小节在面板内用淡底卡片、去除投影，视觉更轻 */
+        .st-key-course_detail_panel .detail-section { box-shadow: none; background: #FAFBFE; }
+        .st-key-course_detail_panel .ai-advice-box { box-shadow: none; }
+        /* 空态在固定高度面板内垂直居中 */
+        .st-key-course_detail_panel .detail-empty {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-height: 452px; margin: 0; background: transparent; border-color: #D7DBEA;
+        }
+
+        @media (max-width: 640px) {
+            .major-grid { grid-template-columns: 1fr; }
+            .detail-badge { min-width: 68px; flex: 1 1 30%; }
+            .detail-head { padding: 16px; }
+            .detail-section, .ai-advice-box { padding: 14px 16px; }
+            /* 窄屏下面板高度收敛为视口比例，左右两栏上下堆叠时不过分占屏 */
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.st-key-course_list_panel),
+            [data-testid="stVerticalBlockBorderWrapper"]:has(.st-key-course_detail_panel) {
+                height: 70vh !important; max-height: 560px !important; min-height: 360px !important;
+            }
+            .st-key-course_detail_panel { padding: 16px; }
+        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -483,15 +833,23 @@ def init_state() -> None:
         "current_session_id": None,    # 当前会话 ID；None 表示处于主页"新会话发起模式"
         "conn_state": "unknown",       # unknown / ok / error
         "conn_message": "",
-        "temperature": 0.7,
+        "temperature": 0.5,
         "max_tokens": 2048,
+        "reply_style": "专业",       # 用户友好的回复风格（映射为 temperature + 系统指令）
+        "reply_length": "详细",      # 用户友好的回复长度（映射为 max_tokens + 系统指令）
         "last_latency": None,         # 最近一次回答耗时（秒）
         # ---- 双视图路由相关 ----
-        "current_view": "home",       # home=主页 / chat=独立问答页
+        "current_view": "home",       # home=主页 / chat=独立问答页 / courses=课程体系
         "need_answer": False,         # 问答页是否有待流式生成的回答
         "last_error": None,           # 最近一次生成失败的提示（跨 rerun 保留）
         # 本次重绘后主区域的一次性滚动定位："top"=回顶 / "bottom"=定位最新 / None=不干预
         "scroll_action": None,
+        # ---- 课程体系模块 ----
+        "course_major_id": "SE",   # 当前选中的专业
+        "course_category": "全部",  # 当前类别筛选（全部=显示五个类别）
+        "course_search": "",       # 课程列表搜索关键词
+        "course_selected": {},     # {专业id: 选中的课程code}，跨专业记忆选择
+        "course_advice": {},       # {专业id:课程code: 建议文本}，本次会话内缓存
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -506,9 +864,7 @@ def init_state() -> None:
         if sess.get("messages") or sid == current_id
     }
 
-
 init_state()
-
 
 # --------------------------------------------------------------------------- #
 # 会话 CRUD：所有消息读写都必须显式绑定会话 ID，杜绝跨会话串写
@@ -617,7 +973,16 @@ def build_api_messages() -> List[Dict[str, str]]:
             {"role": m["role"], "content": m["content"]}
             for m in session["messages"]
         ]
-    return [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    # 把用户在侧边栏选择的“回复风格 / 内容长度”作为偏好指令追加到系统提示词，
+    # 与基础角色规则分离，保证预设可独立调整而不影响助教身份设定。
+    style_meta = REPLY_STYLES.get(st.session_state.get("reply_style", "专业"), REPLY_STYLES["专业"])
+    length_meta = REPLY_LENGTHS.get(st.session_state.get("reply_length", "详细"), REPLY_LENGTHS["详细"])
+    preference = (
+        "\n\n【本次回答偏好（学生在界面中主动选择，请严格遵守）】\n"
+        f"· 表达风格：{style_meta['instruction']}\n"
+        f"· {length_meta['instruction']}"
+    )
+    return [{"role": "system", "content": SYSTEM_PROMPT + preference}] + history
 
 
 def prefill_question(text: str) -> None:
@@ -625,79 +990,207 @@ def prefill_question(text: str) -> None:
     st.session_state["question_input"] = text
 
 
-def scroll_main(position: str = "bottom", smooth: bool = False) -> None:
-    """
-    把主区域滚动条一次性定位到顶部或底部。
+# --------------------------------------------------------------------------- #
+# 滚动控制：父窗口单例控制器
+# --------------------------------------------------------------------------- #
+# 这段 JS 运行在 Streamlit 顶层窗口（通过 <script> 元素注入到父文档执行），
+# 不是 components.html 的临时 iframe——iframe 会在每次 rerun 时销毁，
+# 在其中创建的 rAF / setInterval / 闭包会一同死亡（锁模式卡死、纠偏失效的根因）。
+# 顶层窗口在整个会话期间存活，rerun 只重绘 DOM，控制器与监听器不受影响。
+_SCROLL_CONTROLLER_JS = """
+(function () {
+    if (window.__qaScroll) return;
+    var C = window.__qaScroll = {
+        mode: 'idle',
+        start: 0, lastChange: 0, userUp: false,
+        mainEl: function () {
+            return document.querySelector('section.stMain')
+                || document.querySelector('section[data-testid="stMain"]')
+                || document.querySelector('section.main');
+        },
+        nearBottom: function (el) {
+            return el.scrollHeight - el.scrollTop - el.clientHeight < 90;
+        },
+        arm: function (m) {
+            C.mode = m;
+            C.start = Date.now();
+            C.lastChange = Date.now();
+            C.userUp = false;
+            C.pendingSig = null;
+            C.pendingAt = 0;
+            var el = C.mainEl();
+            if (!el) return;
+            if (m === 'top') el.scrollTo({ top: 0 });
+            else if (m === 'bottom') el.scrollTo({ top: el.scrollHeight });
+            else if (m === 'follow' && el.scrollHeight > el.clientHeight)
+                el.scrollTo({ top: el.scrollHeight });
+        }
+    };
 
-    只有内容真正超出可视区时才滚动，避免短会话被强制位移、
-    把标题与顶部按钮顶出可视区（页面显示不全的根因）。
+    /* 用户意图监听：挂在顶层 document 捕获阶段，rerun 重建 DOM 不失效。 */
+    document.addEventListener('wheel', function (e) {
+        if (C.mode === 'top' || C.mode === 'bottom') C.mode = 'idle';
+        else if (C.mode === 'follow' && e.deltaY < 0) C.userUp = true;
+    }, { capture: true, passive: true });
+    var touchY = null;
+    document.addEventListener('touchstart', function (e) {
+        touchY = e.touches[0].clientY;
+    }, { capture: true, passive: true });
+    document.addEventListener('touchmove', function (e) {
+        if (touchY === null) return;
+        var dy = e.touches[0].clientY - touchY;
+        touchY = e.touches[0].clientY;
+        if (C.mode === 'top' || C.mode === 'bottom') C.mode = 'idle';
+        else if (C.mode === 'follow' && dy > 8) C.userUp = true;
+    }, { capture: true, passive: true });
+    document.addEventListener('keydown', function (e) {
+        if (C.mode === 'top' || C.mode === 'bottom') C.mode = 'idle';
+        else if (C.mode === 'follow'
+                && (e.key === 'PageUp' || e.key === 'Home' || e.key === 'ArrowUp'))
+            C.userUp = true;
+    }, true);
+    document.addEventListener('scroll', function (e) {
+        var t = e.target;
+        if (C.mode === 'follow' && t && t === C.mainEl() && C.nearBottom(t))
+            C.userUp = false;  /* 滚回底部：恢复跟随 */
+    }, { capture: true, passive: true });
+
+    /* 唯一的 DOM 变动观察者：为 top/bottom 提供平息计时 */
+    if (window.MutationObserver) {
+        new MutationObserver(function () { C.lastChange = Date.now(); })
+            .observe(document.documentElement,
+                     { childList: true, subtree: true, characterData: true });
+    }
+
+    function tickBody() {
+        var el = C.mainEl();
+        if (!el) return;
+        if (C.mode === 'top' || C.mode === 'bottom') {
+            var now = Date.now();
+            var age = now - C.start;
+
+            function finalize() {
+                /* 终判只看页面整体尺寸（不依赖消息元素是否逐个就位）：
+                   仅微溢出（≤160px）的短会话停在顶部，长会话落到最新消息。
+                   内容不超高时 scrollTo(scrollHeight) 浏览器自然钳制为 0。 */
+                var finalWant = 0;
+                if (C.mode === 'bottom'
+                        && el.scrollHeight - el.clientHeight > 160)
+                    finalWant = el.scrollHeight;
+                el.scrollTo({ top: finalWant });
+                C.mode = 'idle';
+            }
+
+            if (age >= 4000) { finalize(); return; }  /* 硬上限兜底 */
+
+            /* 平息需“两次确认”：DOM 连续安静 800ms 形成候选，再观察
+               350ms，页面高度与消息数都不变才终判——Streamlit 分块渲染
+               存在“假安静窗口”（消息尚未挂全就短暂静止），单次确认会
+               误判，造成点开会话后又一次回顶跳动。 */
+            if (age >= 800 && now - C.lastChange >= 800) {
+                var sig = el.scrollHeight + ':'
+                    + el.querySelectorAll('[data-testid="stChatMessage"]').length;
+                if (sig !== C.pendingSig) {
+                    C.pendingSig = sig;
+                    C.pendingAt = now;
+                } else if (now - C.pendingAt >= 350) {
+                    finalize();
+                    return;
+                }
+            }
+            /* 挂载/增长期目标恒定：回顶恒 0；bottom 恒贴底。
+               绝不逐帧做“短内容回顶”判定（消息分批挂载、停靠栏高度
+               从 0 长起，逐帧判定会让目标反复翻转＝疯狂回顶根因）。 */
+            var want = C.mode === 'top' ? 0 : el.scrollHeight;
+            if (Math.abs(el.scrollTop - want) > 1)
+                el.scrollTo({ top: want });
+        } else if (C.mode === 'follow' && !C.userUp
+                   && el.scrollHeight > el.clientHeight) {
+            if (el.scrollHeight - el.scrollTop - el.clientHeight > 2)
+                el.scrollTo({ top: el.scrollHeight });
+        }
+    }
+    (function frame() {
+        tickBody();
+        requestAnimationFrame(frame);
+    })();
+    /* 后台标签页 rAF 会暂停，低频兜底（独立 interval，不派生 rAF） */
+    setInterval(tickBody, 250);
+})();
+"""
+
+# “回到主页 / 课程体系”点击瞬间立即进入回顶锁，消除 rerun 等待期错位。
+# 监听器幂等，只挂一次（顶层 document，rerun 不影响）。
+_BACK_HOOK_JS = """
+(function () {
+    if (document.__backToTopHooked) return;
+    document.__backToTopHooked = true;
+    document.addEventListener('click', function (e) {
+        if (!e.target || !e.target.closest) return;
+        var hit = e.target.closest(
+            '[class*="courses_back_home"],[class*="st-key-back_home"],'
+            + '[class*="st-key-nav_courses"]');
+        if (!hit) return;
+        if (window.__qaScroll) window.__qaScroll.arm('top');
+    }, true);
+})();
+"""
+
+
+def _inject_parent_js(parent_js: str) -> None:
+    """把 JS 作为 <script> 元素注入到 Streamlit 顶层文档执行。
+
+    components.html 的 iframe 与应用同源，可以访问父文档；脚本元素追加后
+    在父窗口全局作用域同步执行并随即移除，代码本体从此属于顶层窗口。
+    json.dumps 保证任意内容都被安全编码为合法的 JS 字符串字面量。
     """
+    payload = json.dumps(parent_js, ensure_ascii=False)
     components_html(
-        f"""
-        <script>
-        (function () {{
-            var doc = window.parent.document;
-            // Streamlit 1.63 主容器自带“滚到底”行为（stAppScrollToBottomContainer），
-            // 按钮触发重绘后会在不确定的时机强制滚动。这里启动一个 1.5s 的
-            // 事件驱动“滚动锁”：期间任何非用户发起的滚动都会被立即纠回；
-            // 用户一旦主动滚轮/触摸/按键翻页则立刻放行，绝不和用户抢滚动条。
-            var POSITION = '{position}';
-            var ENFORCE_MS = 1500;
-            var start = Date.now();
-            var userScrolled = false;
-            function onUser() {{ userScrolled = true; }}
-
-            function desiredTop(el) {{
-                if (POSITION === 'top') return 0;
-                // 底部停靠输入栏会预留滚动空间：最后一条消息没超出
-                // “停靠栏上方可视区”时回到顶部，避免标题与按钮被顶出。
-                var dock = doc.querySelector('[data-testid="stBottom"]');
-                var dockH = dock ? dock.offsetHeight : 0;
-                var msgs = el.querySelectorAll('[data-testid="stChatMessage"]');
-                if (msgs.length) {{
-                    var elTop = el.getBoundingClientRect().top;
-                    var lastBottom = msgs[msgs.length - 1].getBoundingClientRect().bottom - elTop;
-                    if (lastBottom <= el.clientHeight - dockH + 8) return 0;
-                }}
-                return el.scrollHeight;
-            }}
-            function enforce() {{
-                if (userScrolled || Date.now() - start > ENFORCE_MS) return false;
-                var el = doc.querySelector('section.stMain')
-                      || doc.querySelector('section[data-testid="stMain"]')
-                      || doc.querySelector('section.main');
-                if (!el) return false;
-                var want = desiredTop(el);
-                if (Math.abs(el.scrollTop - want) > 1) {{
-                    el.scrollTo({{ top: want, behavior: 'auto' }});
-                }}
-                return true;
-            }}
-            var el0 = doc.querySelector('section.stMain');
-            if (el0) {{
-                el0.addEventListener('wheel', onUser, {{ passive: true }});
-                el0.addEventListener('touchstart', onUser, {{ passive: true }});
-                doc.addEventListener('keydown', onUser, true);
-                el0.addEventListener('scroll', function () {{
-                    if (!userScrolled && Date.now() - start <= ENFORCE_MS) enforce();
-                }}, {{ passive: true }});
-            }}
-            enforce();
-            var timer = setInterval(function () {{
-                if (!enforce()) clearInterval(timer);
-            }}, 100);
-        }})();
-        </script>
-        """,
+        "<script>(function () {"
+        "var W=window.parent, doc=W.document;"
+        "var s=doc.createElement('script');"
+        f"s.textContent={payload};"
+        "doc.head.appendChild(s); s.parentNode.removeChild(s);"
+        "})();</script>",
         height=0,
     )
 
 
+def scroll_main(mode: str = "bottom") -> None:
+    """
+    通过顶层窗口单例滚动控制器（window.__qaScroll）接管主区域滚动。
+
+    历史上每 0.25s 注入一个独立“滚动锁”，多锁并存且各自的目标位置
+    在页面增长过程中会在 0 / 底部之间翻转，是提问时界面乱跳、
+    回看历史被强行拽回底部的根因。控制器全局唯一：
+
+    - idle   ：完全不干预
+    - top    ：视图切换回顶，DOM 平息检测 800ms（硬上限 4s），用户操作即放行
+    - bottom ：一次性定位（切换历史会话 / 流式结束重绘后），内容静止时
+               目标值恒定，平息后自动转 idle；短会话保持顶部不顶走标题
+    - follow ：流式跟随，内容增长时持续贴底；用户一旦上滚即停止跟随，
+               滚回底部附近自动恢复，绝不与用户抢滚动条
+    """
+    _inject_parent_js(_SCROLL_CONTROLLER_JS + f"\nwindow.__qaScroll.arm('{mode}');\n")
+
+
+def inject_instant_back_hook() -> None:
+    """首屏即自举控制器（空闲态），并安装“回到主页/课程体系”点击即时回顶钩子。
+
+    每次渲染注入都安全：控制器与钩子均幂等。
+    """
+    _inject_parent_js(_SCROLL_CONTROLLER_JS + _BACK_HOOK_JS)
+
+
 def consume_scroll_action() -> None:
-    """按场景标记执行一次性滚动定位后清除标记；无标记的普通渲染绝不干预滚动条。"""
+    """按场景标记执行一次性滚动定位后清除标记；无标记的普通渲染绝不干预滚动条。
+
+    bottom 为一次性定位（切换历史会话、流式结束重绘后落到最新消息）；
+    流式生成过程中的持续跟随由 run_answer_stream 的 follow 模式负责。
+    """
     action = st.session_state.get("scroll_action")
     if action in ("top", "bottom"):
-        scroll_main(action, smooth=False)
+        scroll_main(action)
         st.session_state.scroll_action = None
 
 
@@ -734,27 +1227,23 @@ def run_answer_stream() -> None:
     with st.chat_message("assistant"):
         answer_slot = st.empty()
         answer_slot.markdown("⏳ 正在思考中…")
-        scroll_main("bottom", smooth=True)
+        # 立即武装“流式跟随”：后续 answer_slot 内容增长由单例控制器
+        # 逐帧贴底，无需（也不得）在 chunk 循环里反复注入滚动脚本——
+        # 多锁并存正是提问时界面乱跳、回看历史被拽回的根因。
+        scroll_main("follow")
         try:
             stream = client.chat_stream(
                 build_api_messages(),
                 temperature=st.session_state.temperature,
                 max_tokens=st.session_state.max_tokens,
             )
-            # 节流：约每 0.25 秒滚动一次，避免频繁注入脚本
-            last_scroll = 0.0
             for chunk in stream:
                 full_answer += chunk
                 # 尾部光标模拟逐字输出效果
                 answer_slot.markdown(full_answer + " ▌")
-                now = time.time()
-                if now - last_scroll >= 0.25:
-                    scroll_main("bottom", smooth=True)
-                    last_scroll = now
 
             if full_answer:
                 answer_slot.markdown(full_answer)
-                scroll_main("bottom", smooth=True)
             else:
                 answer_slot.markdown("（模型未返回内容，请换一种问法再试一次。）")
 
@@ -794,6 +1283,8 @@ def run_answer_stream() -> None:
         session["updated_at"] = time.time()
         save_sessions()
     st.session_state.need_answer = False
+    # 流式结束：解除跟随，随后的重绘由 consume_scroll_action 做一次性落位
+    scroll_main("idle")
     st.rerun()
 
 
@@ -806,7 +1297,7 @@ with st.sidebar:
         <div class="qa-side-head">
             <span class="qa-side-logo">🎓</span>
             <span>
-                <p class="qa-side-title">智能课程答疑系统</p>
+                <p class="qa-side-title">智能课程答疑系统v1.1</p>
                 <p class="qa-side-sub">Powered by zhh</p>
             </span>
         </div>
@@ -818,6 +1309,17 @@ with st.sidebar:
     if st.button("➕ 新建对话", key="new_session_top", use_container_width=True, type="primary"):
         create_new_session()
         st.session_state.current_view = "chat"
+        st.rerun()
+
+    # 课程体系导航：进入专业→课程→详情的三级展示模块
+    if st.button(
+        "📚 课程体系(开发版)",
+        key="nav_courses",
+        use_container_width=True,
+        type="primary" if st.session_state.current_view == "courses" else "secondary",
+    ):
+        st.session_state.current_view = "courses"
+        st.session_state.scroll_action = "top"
         st.rerun()
 
     # 当前会话状态提示（成熟化界面：隐藏，当前会话已在历史列表中高亮标识）
@@ -874,22 +1376,66 @@ with st.sidebar:
     #         st.toast(f"连接失败：{message}", icon="⚠️")
     #     st.rerun()
 
-    # ---- 2. 模型与回答参数 ---- #
-    st.markdown("##### 模型与回答参数")
-    # st.caption(f"当前模型：`{DEFAULT_MODEL}`（DeepSeek-V3 通用对话模型）")
-    st.slider(
-        "回答随机性 temperature",
-        min_value=0.0, max_value=1.5,
-        step=0.1,
-        help="数值越小回答越严谨稳定，值越大越发散有创意。课程答疑建议 0.3~0.8。",
-        key="temperature",
+    # ---- 2. 回答偏好：技术参数（temperature / max_tokens）已封装为友好选项 ---- #
+    st.markdown("##### ✨ 回答偏好")
+    style_choice = st.segmented_control(
+        "回复风格",
+        options=STYLE_ORDER,
+        key="reply_style",
+        selection_mode="single",
+        help="选择 AI 的表达语气，切换后下一次回答立即生效。",
+        label_visibility="visible",
+    ) or "专业"
+    length_choice = st.segmented_control(
+        "回复内容长度",
+        options=LENGTH_ORDER,
+        key="reply_length",
+        selection_mode="single",
+        help="选择期望的回答篇幅，切换后下一次回答立即生效。",
+        label_visibility="visible",
+    ) or "详细"
+
+    # 选择结果即时映射回 API 数值参数（run_answer_stream 直接读取这两个 key）
+    style_meta = REPLY_STYLES[style_choice]
+    length_meta = REPLY_LENGTHS[length_choice]
+    st.session_state.temperature = style_meta["temp"]
+    st.session_state.max_tokens = length_meta["tokens"]
+
+    # 当前选择读数：选项变化时整块淡入（class 随值变化以重启动画），
+    # 仪表条宽度/颜色平滑过渡，给出明确的“当前状态 + 已生效”视觉反馈。
+    from html import escape as _esc_style
+    creativity_pct = round(style_meta["temp"] / 1.5 * 100)
+    st.markdown(
+        f"""
+        <div class="pref-readout pref-flash-{STYLE_ORDER.index(style_choice)}">
+            <span class="pref-dot"></span>
+            <div class="pref-body">
+                <div class="pref-line">
+                    <b>{_esc_style(style_choice)}</b>
+                    <span class="pref-desc">{_esc_style(style_meta['desc'])}</span>
+                </div>
+                <div class="pref-meter"><i style="width:{creativity_pct}%"></i></div>
+                <div class="pref-line"><span class="pref-desc">创意度 {creativity_pct}% · 已即时生效</span></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.slider(
-        "最大回答长度 max_tokens",
-        min_value=256, max_value=4096,
-        step=128,
-        help="单次回答允许生成的最大 token 数，期望回答较长时可适当调大。",
-        key="max_tokens",
+    st.markdown(
+        f"""
+        <div class="pref-readout pref-flash-{LENGTH_ORDER.index(length_choice)}">
+            <span class="pref-dot"></span>
+            <div class="pref-body">
+                <div class="pref-line">
+                    <b>{_esc_style(length_choice)}</b>
+                    <span class="pref-desc">{_esc_style(length_meta['desc'])}</span>
+                </div>
+                <div class="pref-meter"><i style="width:{length_meta['tokens'] / 4096 * 100:.0f}%"></i></div>
+                <div class="pref-line"><span class="pref-desc">生成上限 {length_meta['tokens']} tokens · 已即时生效</span></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     # ---- 3. 历史会话列表（各会话消息独立存储，可查看/切换/删除） ---- #
@@ -961,7 +1507,7 @@ with st.sidebar:
 
     st.caption(f"""
                 本项目由 [Trae CN] 提供支持\n
-                基于DeepSeek-V3 通用对话模型搭建
+                基于DeepSeek-V3通用对话模型搭建
                 """)
 
 
@@ -995,7 +1541,7 @@ def render_banner() -> None:
                 </span>
             </div>
             -->
-            <h1>🎓 基于大模型的在线课程答疑系统</h1>
+            <h1>🎓 基于大模型的智能课程答疑系统</h1>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1051,9 +1597,8 @@ def render_home() -> None:
         """
         <div class="qa-welcome">
             <h3>👋 你好，同学！</h3>
-            <p>我是你的智能课程答疑助教。无论是课程概念辨析、时间安排还是练习题讲解，
-               都可以直接在下方输入框提问。提交后将自动创建新会话并进入独立问答页，
-               答案实时流式呈现。</p>
+            <p>我是你的智能课程答疑助教。无论你对课程有哪方面的问题，都可以直接向我提问哦！
+            </p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1170,13 +1715,333 @@ def render_chat() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 课程体系视图：专业 → 类别筛选 → 课程列表 → 课程详情（含 AI 学习建议）
+# --------------------------------------------------------------------------- #
+def _inject_catalog_dynamic_styles() -> None:
+    """根据类别元数据生成数据驱动的 pill/卡片配色（避免在静态 CSS 中写死）。"""
+    rules = []
+    for cat, meta in catalog.CATEGORY_META.items():
+        code = meta["code"]
+        # 类别筛选按钮（未选中态）：淡色描边 + 类别强调色文字
+        rules.append(
+            f'[class*="st-key-catpill_{code}"] > button {{'
+            f'border-color:{meta["tint_strong"]} !important;'
+            f'color:{meta["accent"]} !important;'
+            f'background:{meta["tint"]} !important; }}'
+        )
+        # 课程卡片左侧类别色条
+        rules.append(
+            f'[class*="st-key-coursecard_"][class*="-{code}-"] > button {{'
+            f'border-left:4px solid {meta["accent"]} !important; }}'
+        )
+    st.markdown("<style>" + "\n".join(rules) + "</style>", unsafe_allow_html=True)
+
+
+def render_courses() -> None:
+    """三级课程展示：专业选择 → 类别/课程列表 → 课程详情 + AI 学习建议。"""
+    from html import escape as _esc
+
+    _inject_catalog_dynamic_styles()
+
+    # ---- 顶部导航 ---- #
+    title_col, back_col = st.columns([0.82, 0.18])
+    title_col.markdown("#### 📚 专业课介绍")
+    if back_col.button("🏠 回到主页", key="courses_back_home", use_container_width=True, type="primary"):
+        st.session_state.current_view = "home"
+        st.session_state.scroll_action = "top"
+        st.rerun()
+
+    # ---- 第一级：专业卡片（可扩展注册表） ---- #
+    major_cols = st.columns(len(catalog.MAJORS))
+    for col, major in zip(major_cols, catalog.MAJORS):
+        is_active = major.available and st.session_state.course_major_id == major.id
+        card_cls = "major-card"
+        if is_active:
+            card_cls += " active"
+        if not major.available:
+            card_cls += " locked"
+        if major.available:
+            loaded = catalog.load_major_courses(major)
+            badge = f"{len(loaded.courses)} 门课程 · {loaded.total_credits:g} 总学分"
+        else:
+            badge = "🚧 敬请期待"
+        col.markdown(
+            f"""
+            <div class="{card_cls}">
+                <div class="mc-icon">{major.icon}</div>
+                <div class="mc-name">{_esc(major.name)}</div>
+                <div class="mc-en">{_esc(major.name_en)}</div>
+                <div class="mc-tag">{_esc(major.tagline)}</div>
+                <span class="mc-badge">{badge}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if major.available:
+            if col.button(
+                "进入该专业" if not is_active else "✅ 当前专业",
+                key=f"major_enter_{major.id}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state.course_major_id = major.id
+                st.session_state.course_category = "全部"
+                st.session_state.course_search = ""
+                st.session_state.scroll_action = "top"
+                st.rerun()
+        else:
+            col.button("暂未开放", key=f"major_locked_{major.id}", use_container_width=True, disabled=True)
+
+    # ---- 当前专业数据加载（带 Excel 解析缓存） ---- #
+    major = catalog.get_major(st.session_state.course_major_id)
+    if major is None or not major.available:
+        st.info("该专业课介绍正在建设中，敬请期待。")
+        return
+    major = catalog.load_major_courses(major)
+
+    st.markdown(
+        f"<p style='color:var(--ink-400);font-size:.85rem;margin:-6px 0 14px;'>"
+        f"{major.icon} <b style='color:var(--ink-600);'>{major.name}</b> · 共 {len(major.courses)} 门课程 · "
+        f"建议培养路径：公共基础 → 专业基础 → 专业核心 → 拓展选修 → 实践环节</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ---- 第二级：类别分段筛选 ---- #
+    filters = ["全部"] + catalog.CATEGORY_ORDER
+    filter_cols = st.columns(len(filters))
+    current_filter = st.session_state.course_category
+    for col, cat in zip(filter_cols, filters):
+        if cat == "全部":
+            icon, count = "🗂️", len(major.courses)
+            key = "catpill_ALL"
+        else:
+            meta = catalog.CATEGORY_META[cat]
+            icon, count, key = meta["icon"], len(major.courses_by_category(cat)), f"catpill_{meta['code']}"
+        if col.button(
+            f"{icon} {cat} {count}",
+            key=key,
+            use_container_width=True,
+            type="primary" if current_filter == cat else "secondary",
+        ):
+            st.session_state.course_category = cat
+            st.rerun()
+
+    filtered = major.courses if current_filter == "全部" else major.courses_by_category(current_filter)
+    if current_filter != "全部":
+        cat_meta = catalog.CATEGORY_META[current_filter]
+        st.markdown(
+            f"<p style='font-size:.82rem;color:{cat_meta['accent']};margin:2px 0 12px;font-weight:600;'>"
+            f"{cat_meta['icon']} {_esc(cat_meta['desc'])}</p>",
+            unsafe_allow_html=True,
+        )
+
+    # 选中课程：在「类别筛选结果」中定位；搜索仅收窄左侧列表，不改变右侧详情
+    selected_map = st.session_state.course_selected
+    selected_code = selected_map.get(major.id)
+    course = next((c for c in filtered if c.code == selected_code), None)
+    if course is None and filtered:
+        course = filtered[0]
+        selected_map[major.id] = course.code
+
+    # 关键词搜索（课程名/英文名/编号/知识点/职业方向），仅作用于左侧列表展示
+    keyword = st.session_state.course_search.strip().lower()
+    if keyword:
+        def _match(c) -> bool:
+            haystack = " ".join(
+                [c.name, c.name_en, c.code, c.career, c.core_content]
+            ).lower()
+            return keyword in haystack
+        displayed = [c for c in filtered if _match(c)]
+    else:
+        displayed = filtered
+
+    # ---- 第三级：左列表 + 右详情（响应式：窄屏自动上下堆叠） ---- #
+    list_col, detail_col = st.columns([0.4, 0.6], gap="medium")
+
+    with list_col:
+        st.text_input(
+            "搜索课程",
+            key="course_search",
+            placeholder="🔍 搜索课程名 / 编号 / 关键词，如：数据结构、SE-PC",
+            label_visibility="collapsed",
+        )
+        scope_name = "全部课程" if current_filter == "全部" else current_filter
+        st.markdown(
+            f"<p class='course-search-hint'>{_esc(scope_name)} · 共 {len(displayed)} 门"
+            + ("（搜索结果）" if keyword else "")
+            + "</p>",
+            unsafe_allow_html=True,
+        )
+        # 固定高度滚动面板：课程再多也只在面板内滚动，不撑长整个页面
+        with st.container(border=True, height=600, key="course_list_panel"):
+            if not displayed:
+                st.markdown(
+                    "<p style='color:var(--ink-400);font-size:.85rem;text-align:center;"
+                    "padding:40px 8px;'>😶 没有匹配的课程<br>换个关键词试试</p>",
+                    unsafe_allow_html=True,
+                )
+            # “全部”视图且未搜索时，在滚动面板内按类别插入分组小标题
+            show_groups = current_filter == "全部" and not keyword
+            last_group = None
+            for c in displayed:
+                if show_groups and c.category != last_group:
+                    last_group = c.category
+                    gm = catalog.CATEGORY_META[c.category]
+                    group_n = len(major.courses_by_category(c.category))
+                    st.markdown(
+                        f"<div class='course-group-label'>{gm['icon']} {_esc(c.category)}"
+                        f" <span style='font-weight:600;'>{group_n}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                label = (
+                    f"{catalog.CATEGORY_META[c.category]['icon']} {c.name}　【{c.nature}】\n"
+                    f"{c.code} · {c.credits}学分 · {c.hours}学时 · {c.difficulty}"
+                )
+                if st.button(
+                    label,
+                    key=f"coursecard_{c.code}",
+                    use_container_width=True,
+                    type="primary" if course is not None and c.code == course.code else "secondary",
+                ):
+                    selected_map[major.id] = c.code
+                    st.rerun()
+
+    with detail_col:
+        # 与左侧课程列表同规格：边框 + 600px 固定高度，内容在面板内滚动
+        with st.container(border=True, height=600, key="course_detail_panel"):
+            if course is None:
+                st.markdown(
+                    """
+                    <div class="detail-empty">
+                        <div class="de-icon">📖</div>
+                        <p>请在左侧选择一门课程<br>查看课程详情与 AI 学习建议</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                _render_course_detail(major, course)
+
+
+def _render_course_detail(major, course) -> None:
+    """渲染单门课程的完整详情与 AI 学习建议区域。"""
+    from html import escape as _esc
+
+    meta = catalog.CATEGORY_META.get(course.category, {})
+    accent = meta.get("accent", "#4F46E5")
+    tint = meta.get("tint", "#EEF0FF")
+
+    # 详情头部：类别徽章 / 中英文名
+    st.markdown(
+        f"""
+        <div class="detail-head" style="border-top:4px solid {accent};">
+            <span class="detail-cat" style="background:{tint};color:{accent};">
+                {meta.get('icon', '📘')} {_esc(course.category)}
+            </span>
+            <h2>{_esc(course.name)}</h2>
+            <div class="dh-en">{_esc(course.name_en)} · {_esc(course.code)}</div>
+            <div class="detail-badges">
+                <span class="detail-badge"><span class="db-k">课程性质</span><span class="db-v">{_esc(course.nature) or '—'}</span></span>
+                <span class="detail-badge"><span class="db-k">学分</span><span class="db-v">{_esc(course.credits) or '—'}</span></span>
+                <span class="detail-badge"><span class="db-k">学时</span><span class="db-v">{_esc(course.hours) or '—'}</span></span>
+                <span class="detail-badge"><span class="db-k">建议学期</span><span class="db-v">{_esc(course.semester) or '—'}</span></span>
+                <span class="detail-badge"><span class="db-k">难度</span><span class="db-v">{_esc(course.difficulty) or '—'}</span></span>
+                <span class="detail-badge"><span class="db-k">实践占比</span><span class="db-v">{_esc(course.practice_ratio) or '—'}</span></span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    def section(icon: str, title: str, body: str) -> None:
+        st.markdown(
+            f'<div class="detail-section"><h4>{icon} {_esc(title)}</h4>'
+            f'<p>{_esc(body) or "—"}</p></div>',
+            unsafe_allow_html=True,
+        )
+
+    section("📝", "课程简介", course.intro)
+    section("🎓", "能力培养目标", course.objectives)
+    section("🧪", "考核方式", course.assessment)
+    section("💼", "对应职业方向", course.career)
+    if course.remark:
+        section("📌", "备注", course.remark)
+
+    # 核心知识点：标签云
+    if course.content_points:
+        chips = "".join(f'<span class="tag-chip">{_esc(p)}</span>' for p in course.content_points)
+        st.markdown(
+            f'<div class="detail-section"><h4>🧩 核心学习内容</h4>'
+            f'<div class="tag-cloud">{chips}</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # 先修路径：先修课 → 本课程（整块一次输出，避免 HTML 标签被 markdown 解析器截断）
+    chain_nodes = "".join(
+        f'<span class="prereq-node">{_esc(p)}</span><span class="prereq-arrow">→</span>'
+        for p in course.prerequisite_list
+    )
+    if not chain_nodes:
+        chain_nodes = '<span class="prereq-node">无硬性先修</span><span class="prereq-arrow">→</span>'
+    st.markdown(
+        f'<div class="detail-section"><h4>🔗 先修课程路径</h4>'
+        f'<div class="prereq-chain">{chain_nodes}'
+        f'<span class="prereq-self">{meta.get("icon", "📘")} {_esc(course.name)}</span></div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ---- AI 学习建议 ---- #
+    advice_key = f"{major.id}:{course.code}"
+    advice = st.session_state.course_advice.get(advice_key)
+    if advice is None:
+        advice = catalog.get_cached_advice(major.id, course.code)
+
+    st.markdown("#### ✨ AI 学习建议")
+    if advice:
+        with st.container(border=True):
+            st.markdown(advice)
+            if st.button("🔄 重新生成建议", key=f"advice_refresh_{course.code}"):
+                # 清除磁盘缓存与本次会话缓存
+                cache = catalog.load_advice_cache()
+                cache.pop(advice_key, None)
+                catalog.save_advice_cache(cache)
+                st.session_state.course_advice.pop(advice_key, None)
+                st.rerun()
+    else:
+        c1, c2 = st.columns(2)
+        if c1.button("✨ 获取 AI 个性化建议", key=f"advice_get_{course.code}", type="primary", use_container_width=True):
+            if not client.configured:
+                st.session_state.course_advice[advice_key] = catalog.fallback_advice(major, course)
+                st.info("未配置 DeepSeek API Key，已为你生成基于课程数据的通用建议。")
+            else:
+                try:
+                    with st.spinner("AI 导师正在分析课程定位与学习路径…"):
+                        text = catalog.generate_ai_advice(major, course, client)
+                    st.session_state.course_advice[advice_key] = text
+                except (DeepSeekConfigError, DeepSeekAPIError, DeepSeekNetworkError) as exc:
+                    st.session_state.course_advice[advice_key] = catalog.fallback_advice(major, course)
+                    st.warning(f"AI 建议生成失败（{exc}），已展示通用建议，可稍后重试。")
+            st.rerun()
+        if c2.button("💬 就这门课提问", key=f"ask_course_{course.code}", use_container_width=True):
+            create_new_session()
+            st.session_state.current_view = "chat"
+            prefill_question(f"我正在学习《{course.name}》，请帮我讲解：")
+            st.rerun()
+
+
+# --------------------------------------------------------------------------- #
 # 视图路由
 # --------------------------------------------------------------------------- #
 if st.session_state.current_view == "chat":
     render_chat()
+elif st.session_state.current_view == "courses":
+    render_courses()
 else:
     render_home()
 
 # 按本次交互场景（新建/切换回顶、提交后定位最新）做一次性滚动定位；
 # 普通渲染不携带标记，绝不强制滚动，避免短会话标题与顶部按钮被顶出可视区。
 consume_scroll_action()
+
+# “回到主页”点击瞬间立即回顶的全局钩子（监听器内部去重，每次渲染都注入也安全）
+inject_instant_back_hook()

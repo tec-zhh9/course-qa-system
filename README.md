@@ -108,7 +108,7 @@ font = "sans serif"            # 字体
 
 - [DeepSeek](https://www.deepseek.com/) - 提供强大的大模型 API
 - [Streamlit](https://streamlit.io/) - 提供优雅的 Web 应用框架
-- [Trae CN](https://github.com/tec-zhh9) - 项目开发支持
+- [Trae CN](https://github.com/tec-zhh9) - 个人项目开发支持
 
 ## 📄 许可证
 

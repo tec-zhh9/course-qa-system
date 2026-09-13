@@ -12,3 +12,9 @@ font = "sans serif"
 
 [server]
 headless = true
+
+# 关闭使用统计：避免 Streamlit 首次运行时向 ~/.streamlit 写入 machine_id_v4。
+# 在目录无写权限的环境（如沙箱/受限容器）中，该写入失败会导致 NEW_SESSION
+# 消息构造异常，前端收不到工具栏配置而不渲染右上角 ⋮ 菜单（toolbarMode 停留在 minimal）。
+[browser]
+gatherUsageStats = false

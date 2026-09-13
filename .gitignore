@@ -7,8 +7,12 @@ __pycache__/
 *$py.class
 *.so
 
-# 会话数据（可选：如果不想上传历史会话，取消下一行注释）
-# sessions_store.json
+# 会话数据（含个人问答记录，不上传；首次运行自动生成）
+sessions_store.json
+
+# AI 课程建议本地缓存（运行时自动生成）
+course_advice_cache.json
+course_advice_cache.json.tmp
 
 # 虚拟环境
 venv/
